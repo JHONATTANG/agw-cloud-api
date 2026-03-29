@@ -18,7 +18,7 @@ Environment variables (set in Vercel project settings):
   DATABASE_URL  – Transaction Pooler connection string (port 6543)
   API_TOKEN     – Static Bearer token shared with the Raspberry Pi gateway
 
-Author: Noxum Soluciones / agw-cloud-api
+Author: Vital Crop / agw-cloud-api
 """
 
 import os
@@ -61,7 +61,7 @@ API_TOKEN: str = os.getenv("API_TOKEN", "dev-token-change-in-production")
 # FastAPI app instance
 # ---------------------------------------------------------------------------
 app = FastAPI(
-    title="AGW Cloud API — Noxum Soluciones",
+    title="AGW Cloud API — Vital Crop",
     version="2.0.0",
     description=(
         "Fog Computing backend para el sistema de cultivo hidropónico de hierbabuena. "
@@ -184,7 +184,7 @@ async def root():
     return {
         "service": "AGW Cloud API",
         "version": "2.0.0",
-        "organization": "Noxum Soluciones",
+        "organization": "Vital Crop",
         "status": "operational",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -342,4 +342,4 @@ async def get_telemetria(
 
 # Ping redeploy: 2026-03-28 19:22:33
 
-# Final Deploy by: jhonattan gonzalez - Noxum IoT Solutions
+# Final Deploy by: jhonattan gonzalez - Vital Crop IoT

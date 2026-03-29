@@ -1,6 +1,6 @@
 -- migrations/02_users_and_devices.sql
 -- ---------------------------------------------------------------------------
--- Noxum Soluciones - AGW Cloud API
+-- Vital Crop - AGW Cloud API
 -- Módulo de Usuarios, Dispositivos (Asignaciones) y Auth Passwordless
 -- ---------------------------------------------------------------------------
 

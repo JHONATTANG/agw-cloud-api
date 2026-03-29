@@ -40,8 +40,8 @@ def send_otp_email(recipient: str, otp: str):
         return
 
     msg = EmailMessage()
-    msg["Subject"] = "Tu código de acceso - Noxum Soluciones AGW"
-    msg["From"] = f"Noxum Soluciones <{smtp_user}>"
+    msg["Subject"] = "Tu código de acceso - Vital Crop AGW"
+    msg["From"] = f"Vital Crop <{smtp_user}>"
     msg["To"] = recipient
 
     # HTML Body Profesional
@@ -50,7 +50,7 @@ def send_otp_email(recipient: str, otp: str):
     <body style="font-family: Arial, sans-serif; background-color: #f4f6f8; margin: 0; padding: 20px;">
         <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; padding: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
             <header style="border-bottom: 2px solid #10b981; padding-bottom: 20px; text-align: center;">
-                <h1 style="color: #047857; margin: 0;">Noxum Soluciones</h1>
+                <h1 style="color: #047857; margin: 0;">Vital Crop</h1>
                 <p style="color: #6b7280; font-size: 14px; margin-top: 5px;">VitalCrop AGW Dashboard</p>
             </header>
             <main style="padding-top: 20px;">
@@ -69,7 +69,7 @@ def send_otp_email(recipient: str, otp: str):
             </main>
             <footer style="margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 15px; text-align: center; font-size: 12px; color: #9ca3af;">
                 <p>Si no solicitaste este código, puedes ignorar este correo de forma segura.</p>
-                <p>© 2026 Noxum Soluciones IoT. Todos los derechos reservados.</p>
+                <p>© 2026 Vital Crop IoT. Todos los derechos reservados.</p>
             </footer>
         </div>
     </body>
@@ -183,7 +183,7 @@ async def verify_code(payload: VerifyCodePayload):
             SELECT id, expires_at 
             FROM public.auth_codes 
             WHERE user_id = %s AND otp_code = %s AND used = FALSE
-            ORDER BY created_at DESC LIMIT 1
+            ORDER BY expires_at DESC LIMIT 1
             """,
             (user_id, provided_code)
         )

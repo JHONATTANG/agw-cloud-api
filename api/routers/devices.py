@@ -14,192 +14,268 @@ devices_router = APIRouter(prefix="/api/devices", tags=["Devices"])
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
-class DeviceAssignmentPayload(BaseModel):
-    node_id: str = Field(..., min_length=3, max_length=100, description="ID del nodo Fog/Gateway o ESP32 (ej. FOG_RPI_01)")
-    alias: str = Field(..., min_length=2, max_length=255, description="Nombre amigable, ej. 'Cultivo Hierbabuena A'")
 
-class DeviceAssignmentResponse(BaseModel):
-    id: int
-    user_id: str
-    node_id: str
-    alias: Optional[str]
-    assigned_at: str
+class GatewayPayload(BaseModel):
+    gateway_id: str = Field(..., min_length=3, max_length=100, description="ID del Broker/Gateway (ej. FOG_RPI_01)")
+    alias: str = Field(..., min_length=2, max_length=255, description="Alias del Broker")
 
-class DeviceAliasUpdate(BaseModel):
+class GatewayUpdate(BaseModel):
     alias: str = Field(..., min_length=2, max_length=255)
 
+class EdgeNodePayload(BaseModel):
+    sensor_id: str = Field(..., min_length=3, max_length=100, description="ID del ESP32 (ej. ESP32_TIERRA_01)")
+    node_type: str = Field(..., description="TIERRA o HIDROPONIA")
+    alias: str = Field(..., min_length=2, max_length=255, description="Alias del nodo")
+
+class EdgeNodeUpdate(BaseModel):
+    node_type: str
+    alias: str
+
 # ---------------------------------------------------------------------------
-# Endpoints
+# Endpoints - Gateways (Brokers)
 # ---------------------------------------------------------------------------
+
 @devices_router.post(
-    "/assign",
+    "/gateways",
     status_code=status.HTTP_201_CREATED,
-    summary="Asigna un nodo existente al usuario",
-    response_description="Confirmación de asignación",
+    summary="Asigna un Broker ESP32/Raspberry al usuario",
 )
-async def assign_device(
-    payload: DeviceAssignmentPayload,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Asigna un nodo/dispositivo IoT (node_id) al usuario actual con un alias.
-    """
+async def assign_gateway(payload: GatewayPayload, current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cur = conn.cursor()
-
     try:
         cur.execute(
             """
-            INSERT INTO public.device_assignments (user_id, node_id, alias)
+            INSERT INTO public.gateways (user_id, gateway_id, alias)
             VALUES (%s, %s, %s)
-            ON CONFLICT (user_id, node_id) DO UPDATE SET alias = EXCLUDED.alias
-            RETURNING id, user_id, node_id, alias, assigned_at
+            ON CONFLICT (user_id, gateway_id) DO UPDATE SET alias = EXCLUDED.alias
+            RETURNING id, user_id, gateway_id, alias, created_at
             """,
-            (current_user["id"], payload.node_id, payload.alias)
+            (current_user["id"], payload.gateway_id, payload.alias)
         )
         row = cur.fetchone()
         conn.commit()
     except Exception as exc:
         conn.rollback()
-        logger.error(f"Error asignando dispositivo: {exc}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error asignando el dispositivo.")
+        logger.error(f"Error asignando gateway: {exc}")
+        raise HTTPException(status_code=500, detail="Error asignando el gateway.")
     finally:
         cur.close()
         conn.close()
 
-    return {
-        "id": row["id"],
-        "user_id": str(row["user_id"]),
-        "node_id": row["node_id"],
-        "alias": row["alias"],
-        "assigned_at": row["assigned_at"].isoformat() if row["assigned_at"] else None
-    }
+    return dict(row)
 
 @devices_router.get(
-    "",
+    "/gateways",
     status_code=status.HTTP_200_OK,
-    summary="Lista dispositivos asignados al usuario",
-    response_description="Lista de dispositivos asignados",
+    summary="Lista brokers asignados al usuario",
 )
-async def list_devices(current_user: dict = Depends(get_current_user)):
-    """
-    Retorna todos los dispositivos asignados al usuario actual.
-    """
+async def list_gateways(current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cur = conn.cursor()
-
     try:
         cur.execute(
             """
-            SELECT id, user_id, node_id, alias, assigned_at 
-            FROM public.device_assignments 
+            SELECT id, user_id, gateway_id, alias, created_at 
+            FROM public.gateways 
             WHERE user_id = %s
-            ORDER BY assigned_at DESC
+            ORDER BY created_at DESC
             """,
             (current_user["id"],)
         )
         rows = cur.fetchall()
-    except Exception as exc:
-        logger.error(f"Error listando dispositivos: {exc}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error consultando dispositivos.")
     finally:
         cur.close()
         conn.close()
-
-    results = []
-    for row in rows:
-        results.append({
-            "id": row["id"],
-            "user_id": str(row["user_id"]),
-            "node_id": row["node_id"],
-            "alias": row["alias"],
-            "assigned_at": row["assigned_at"].isoformat() if row["assigned_at"] else None
-        })
-
-    return results
+    return [dict(r) for r in rows]
 
 @devices_router.put(
-    "/{assignment_id}",
+    "/gateways/{gateway_uuid}",
     status_code=status.HTTP_200_OK,
-    summary="Actualiza el alias de una asignación",
-    response_description="Dispositivo actualizado",
+    summary="Actualiza el alias de un broker"
 )
-async def update_device_alias(
-    assignment_id: int,
-    payload: DeviceAliasUpdate,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Actualiza el alias (`alias`) para una asignación específica mediante su `assignment_id`.
-    Verifica que la asignación pertenezca al usuario JWT actual.   
-    """
+async def update_gateway(gateway_uuid: str, payload: GatewayUpdate, current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cur = conn.cursor()
-
     try:
         cur.execute(
             """
-            UPDATE public.device_assignments
+            UPDATE public.gateways
             SET alias = %s
             WHERE id = %s AND user_id = %s
-            RETURNING id, user_id, node_id, alias, assigned_at
+            RETURNING id, user_id, gateway_id, alias, created_at
             """,
-            (payload.alias, assignment_id, current_user["id"])
+            (payload.alias, gateway_uuid, current_user["id"])
         )
         row = cur.fetchone()
         conn.commit()
     except Exception as exc:
         conn.rollback()
-        logger.error(f"Error actualizando alias de dispositivo: {exc}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error actualizando dispositivo.")
+        raise HTTPException(status_code=500, detail="Error actualizando gateway.")
     finally:
         cur.close()
         conn.close()
 
     if not row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asignación de dispositivo no encontrada o no te pertenece.")
-
-    return {
-        "id": row["id"],
-        "user_id": str(row["user_id"]),
-        "node_id": row["node_id"],
-        "alias": row["alias"],
-        "assigned_at": row["assigned_at"].isoformat() if row["assigned_at"] else None
-    }
+        raise HTTPException(status_code=404, detail="Gateway no encontrado.")
+    return dict(row)
 
 @devices_router.delete(
-    "/{assignment_id}",
+    "/gateways/{gateway_uuid}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Remueve una asignación de dispositivo",
-    response_description="No Content",
+    summary="Remueve un broker"
 )
-async def delete_device_assignment(
-    assignment_id: int,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Remueve el dispositivo del usuario (`DELETE` en `device_assignments`).
-    """
+async def delete_gateway(gateway_uuid: str, current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cur = conn.cursor()
-
     try:
         cur.execute(
-            "DELETE FROM public.device_assignments WHERE id = %s AND user_id = %s RETURNING id",
-            (assignment_id, current_user["id"])
+            "DELETE FROM public.gateways WHERE id = %s AND user_id = %s RETURNING id",
+            (gateway_uuid, current_user["id"])
         )
         row = cur.fetchone()
         conn.commit()
-    except Exception as exc:
-        conn.rollback()
-        logger.error(f"Error eliminando asignación: {exc}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error eliminando dispositivo.")
     finally:
         cur.close()
         conn.close()
 
     if not row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asignación de dispositivo no encontrada o no te pertenece.")
+        raise HTTPException(status_code=404, detail="Gateway no encontrado.")
+    return None
 
-    # 204 No Content se maneja directo devolviendo None
+# ---------------------------------------------------------------------------
+# Endpoints - Edge Nodes (ESP32)
+# ---------------------------------------------------------------------------
+
+@devices_router.post(
+    "/gateways/{gateway_uuid}/nodes",
+    status_code=status.HTTP_201_CREATED,
+    summary="Asigna un nodo ESP32 a un broker",
+)
+async def assign_node(gateway_uuid: str, payload: EdgeNodePayload, current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Validar que el gateway pertenece al usuario
+        cur.execute("SELECT id FROM public.gateways WHERE id = %s AND user_id = %s", (gateway_uuid, current_user["id"]))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Gateway no encontrado o no te pertenece.")
+
+        cur.execute(
+            """
+            INSERT INTO public.edge_nodes (gateway_id, sensor_id, node_type, alias)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (gateway_id, sensor_id) DO UPDATE SET alias = EXCLUDED.alias, node_type = EXCLUDED.node_type
+            RETURNING id, gateway_id, sensor_id, node_type, alias, created_at
+            """,
+            (gateway_uuid, payload.sensor_id, payload.node_type, payload.alias)
+        )
+        row = cur.fetchone()
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        conn.rollback()
+        logger.error(f"Error asignando nodo: {exc}")
+        raise HTTPException(status_code=500, detail="Error asignando el nodo.")
+    finally:
+        cur.close()
+        conn.close()
+
+    return dict(row)
+
+@devices_router.get(
+    "/gateways/{gateway_uuid}/nodes",
+    status_code=status.HTTP_200_OK,
+    summary="Lista los nodos ESP32 de un broker",
+)
+async def list_nodes(gateway_uuid: str, current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Validar que el gateway pertenece al usuario
+        cur.execute("SELECT id FROM public.gateways WHERE id = %s AND user_id = %s", (gateway_uuid, current_user["id"]))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Gateway no encontrado o no te pertenece.")
+
+        cur.execute(
+            "SELECT id, gateway_id, sensor_id, node_type, alias, created_at FROM public.edge_nodes WHERE gateway_id = %s",
+            (gateway_uuid,)
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    return [dict(r) for r in rows]
+
+@devices_router.put(
+    "/nodes/{node_uuid}",
+    status_code=status.HTTP_200_OK,
+    summary="Actualiza configuracion de un nodo"
+)
+async def update_node(node_uuid: str, payload: EdgeNodeUpdate, current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Validar que el gateway de este nodo pertenece al usuario
+        cur.execute(
+            """
+            SELECT e.id FROM public.edge_nodes e
+            JOIN public.gateways g ON e.gateway_id = g.id
+            WHERE e.id = %s AND g.user_id = %s
+            """,
+            (node_uuid, current_user["id"])
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Nodo no encontrado.")
+
+        cur.execute(
+            """
+            UPDATE public.edge_nodes
+            SET alias = %s, node_type = %s
+            WHERE id = %s
+            RETURNING id, gateway_id, sensor_id, node_type, alias, created_at
+            """,
+            (payload.alias, payload.node_type, node_uuid)
+        )
+        row = cur.fetchone()
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail="Error actualizando nodo.")
+    finally:
+        cur.close()
+        conn.close()
+
+    return dict(row)
+
+@devices_router.delete(
+    "/nodes/{node_uuid}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remueve un nodo ESP32"
+)
+async def delete_node(node_uuid: str, current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            DELETE FROM public.edge_nodes e
+            USING public.gateways g
+            WHERE e.gateway_id = g.id AND e.id = %s AND g.user_id = %s
+            RETURNING e.id
+            """,
+            (node_uuid, current_user["id"])
+        )
+        row = cur.fetchone()
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Nodo no encontrado.")
     return None

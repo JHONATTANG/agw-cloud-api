@@ -1,5 +1,5 @@
 # API_SERVICES.md — AGW Cloud API
-## Noxum Soluciones · Sistema Hidropónico Indoor de Hierbabuena
+## Vital Crop · Sistema Hidropónico Indoor de Hierbabuena
 
 > **Versión:** 2.0.0 · **Repositorio:** `agw-cloud-api` · **Despliegue:** Vercel Serverless (Python 3.11)
 
@@ -51,7 +51,7 @@ Host: tu-proyecto.vercel.app
 {
   "service": "AGW Cloud API",
   "version": "2.0.0",
-  "organization": "Noxum Soluciones",
+  "organization": "Vital Crop",
   "status": "operational",
   "timestamp": "2026-03-28T23:45:00.123456+00:00"
 }

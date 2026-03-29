@@ -1,0 +1,349 @@
+{
+  "info": {
+    "_postman_id": "82dad48a-3615-4db3-b84a-6c87e0e03d82",
+    "name": "Vital Crop AGW Cloud API - Vercel Serverless",
+    "description": "API REST para el sistema hidropónico indoor de hierbabuena. Incluye Auth, Usuarios, Gateways, Nodos y Telemetría.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://agw-cloud-api.vercel.app",
+      "type": "string"
+    },
+    {
+      "key": "api_token",
+      "value": "VitalCrop_Secure_Cloud_API_82dad48a-3615-4db3-b84a-6c87e0e03d82",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Health Checks",
+      "item": [
+        {
+          "name": "Root Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/",
+              "host": ["{{base_url}}"],
+              "path": [""]
+            }
+          }
+        },
+        {
+          "name": "Detailed DB Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "health"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Auth (Passwordless)",
+      "item": [
+        {
+          "name": "Request OTP Code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"jhonattan.gonzalez.38@gmail.com\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/request-code",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "request-code"]
+            }
+          }
+        },
+        {
+          "name": "Verify OTP Code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"jhonattan.gonzalez.38@gmail.com\",\n  \"code\": \"123456\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/auth/verify-code",
+              "host": ["{{base_url}}"],
+              "path": ["api", "auth", "verify-code"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Users",
+      "item": [
+        {
+          "name": "Get User Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/users/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me"]
+            }
+          }
+        },
+        {
+          "name": "Update User Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"Jhonattan Gonzalez - Updated\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/users/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "users", "me"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Devices (Gateways & Nodes)",
+      "item": [
+        {
+          "name": "List User Gateways",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/devices/gateways",
+              "host": ["{{base_url}}"],
+              "path": ["api", "devices", "gateways"]
+            }
+          }
+        },
+        {
+          "name": "Assign Gateway",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"gateway_id\": \"FOG_RPI_HIERBABUENA_01\",\n  \"alias\": \"Broker Principal - Sede Sábana\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/devices/gateways",
+              "host": ["{{base_url}}"],
+              "path": ["api", "devices", "gateways"]
+            }
+          }
+        },
+        {
+          "name": "List Edge Nodes",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/devices/gateways/{{gateway_uuid}}/nodes",
+              "host": ["{{base_url}}"],
+              "path": ["api", "devices", "gateways", "{{gateway_uuid}}", "nodes"]
+            }
+          }
+        },
+        {
+          "name": "Assign Edge Node (Tierra)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sensor_id\": \"ESP32_TIERRA_01\",\n  \"node_type\": \"TIERRA\",\n  \"alias\": \"Nodo Tierra Principal\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/devices/gateways/{{gateway_uuid}}/nodes",
+              "host": ["{{base_url}}"],
+              "path": ["api", "devices", "gateways", "{{gateway_uuid}}", "nodes"]
+            }
+          }
+        },
+        {
+          "name": "Assign Edge Node (Hidroponía)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sensor_id\": \"ESP32_HIDROPONIA_01\",\n  \"node_type\": \"HIDROPONIA\",\n  \"alias\": \"Nodo Hidroponía Principal\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/devices/gateways/{{gateway_uuid}}/nodes",
+              "host": ["{{base_url}}"],
+              "path": ["api", "devices", "gateways", "{{gateway_uuid}}", "nodes"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Telemetría",
+      "item": [
+        {
+          "name": "Ingerir Telemetría (Tierra)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"node_id\": \"FOG_RPI_HIERBABUENA_01\",\n  \"sensor_id\": \"ESP32_TIERRA_01\",\n  \"temperatura\": 23.5,\n  \"humedad_ambiente\": 65.2,\n  \"humedad_suelo\": 82.0,\n  \"estado_actuadores\": \"{\\\"valvula_agua\\\": \\\"ON\\\"}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/telemetria",
+              "host": ["{{base_url}}"],
+              "path": ["api", "telemetria"]
+            }
+          }
+        },
+        {
+          "name": "Ingerir Telemetría (Hidroponía)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"node_id\": \"FOG_RPI_HIERBABUENA_01\",\n  \"sensor_id\": \"ESP32_HIDROPONIA_01\",\n  \"temperatura\": 22.8,\n  \"humedad_ambiente\": 67.0,\n  \"ph\": 6.2,\n  \"estado_actuadores\": \"{\\\"bomba_nutrientes\\\": \\\"ON\\\"}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/telemetria",
+              "host": ["{{base_url}}"],
+              "path": ["api", "telemetria"]
+            }
+          }
+        },
+        {
+          "name": "Obtener Historial por Gateway",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{api_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/telemetria/FOG_RPI_HIERBABUENA_01",
+              "host": ["{{base_url}}"],
+              "path": ["api", "telemetria", "FOG_RPI_HIERBABUENA_01"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
