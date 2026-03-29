@@ -327,3 +327,5 @@ async def get_telemetria(
 # ---------------------------------------------------------------------------
 # Vercel imports `app` directly as an ASGI app via the `builds` config.
 # Nothing extra needed; just expose `app` at module level (done above).
+
+# Ping redeploy: 2026-03-28 19:22:33
