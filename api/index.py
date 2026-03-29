@@ -35,6 +35,11 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
+# Importar los nuevos APIRouters de gestión
+from api.routers.auth import auth_router
+from api.routers.users import users_router
+from api.routers.devices import devices_router
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -66,6 +71,13 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json",
 )
+
+# ---------------------------------------------------------------------------
+# Routers Registration
+# ---------------------------------------------------------------------------
+app.include_router(auth_router)
+app.include_router(users_router)
+app.include_router(devices_router)
 
 # ---------------------------------------------------------------------------
 # CORS

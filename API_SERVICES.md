@@ -286,6 +286,101 @@ Authorization: Bearer <API_TOKEN>
 
 ---
 
+### 5. `POST /api/auth/request-code` — Solicitar Código Passwordless
+
+**Propósito:** Inicia el flujo Passwordless. Recibe un email de un operador o agrónomo, genera un OTP y lo envía vía correo electrónico. Si el usuario no existe, lo aprovisiona automáticamente.
+
+**Autenticación:** ❌ No requerida
+
+**Request Body — Schema:**
+```json
+{
+  "email": "jhonattan.gonzalez.38@gmail.com"
+}
+```
+
+**Respuesta exitosa — 200 OK:**
+```json
+{
+  "status": "ok",
+  "message": "Código enviado a jhonattan.gonzalez.38@gmail.com"
+}
+```
+
+---
+
+### 6. `POST /api/auth/verify-code` — Validar Código y Obtener JWT
+
+**Propósito:** Finaliza el flujo Passwordless validando el OTP. Retorna el Token JWT necesario para operar el Dashboard y gestionar dispositivos.
+
+**Autenticación:** ❌ No requerida
+
+**Request Body — Schema:**
+```json
+{
+  "email": "jhonattan.gonzalez.38@gmail.com",
+  "code": "481516"
+}
+```
+
+**Respuesta exitosa — 200 OK:**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI...",
+  "token_type": "bearer",
+  "user_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+  "email": "jhonattan.gonzalez.38@gmail.com"
+}
+```
+
+---
+
+### 7. Endpoints Protegidos por JWT (`/api/users` & `/api/devices`)
+
+Estos endpoints son utilizados por Web/App Dashboards y **requieren** el token JWT emitido por `/api/auth/verify-code` en lugar del Static Token IoT.
+
+**Autenticación:** ✅ **Requerida** — `Bearer Token` (JWT)
+
+#### `GET /api/users/me` — Perfil de Operador
+Retorna la información del agricultor/operador autenticado.
+```json
+{
+  "id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+  "email": "jhonattan.gonzalez.38@gmail.com",
+  "full_name": "Jhonattan Gonzalez",
+  "created_at": "2026-03-28T20:00:00+00:00"
+}
+```
+
+#### `GET /api/devices` — Listar Dispositivos Asignados
+Retorna los nodos (Gateway o ESP32) asociados al operador.
+```json
+[
+  {
+    "id": 1,
+    "user_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+    "node_id": "FOG_RPI_VITALCROP_01",
+    "alias": "Gateway IoT Principal",
+    "assigned_at": "2026-03-28T20:00:00+00:00"
+  },
+  {
+    "id": 2,
+    "user_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+    "node_id": "ESP32_SOIL_NODE_A",
+    "alias": "Nodo de Suelo (Tierra)",
+    "assigned_at": "2026-03-28T20:05:00+00:00"
+  }
+]
+```
+
+#### Otros Endpoints CRUD:
+- `PUT /api/users/me`: Actualiza `full_name`. Payload: `{"full_name": "Nuevo Nombre"}`
+- `POST /api/devices/assign`: Asocia nodo. Payload: `{"node_id": "ESP32_...", "alias": "Nombre"}`
+- `PUT /api/devices/{id}`: Cambia alias. Payload: `{"alias": "Nuevo Alias"}`
+- `DELETE /api/devices/{id}`: Remueve asignación.
+
+---
+
 ## Referencia de Valores Óptimos — Hierbabuena (`Mentha spicata`)
 
 | Parámetro | Rango Óptimo | Valor Crítico Bajo | Valor Crítico Alto |
