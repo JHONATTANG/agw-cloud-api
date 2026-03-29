@@ -329,3 +329,5 @@ async def get_telemetria(
 # Nothing extra needed; just expose `app` at module level (done above).
 
 # Ping redeploy: 2026-03-28 19:22:33
+
+# Final Deploy by: jhonattan gonzalez - Noxum IoT Solutions
