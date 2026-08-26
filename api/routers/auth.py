@@ -1,8 +1,6 @@
 import os
 import random
 import logging
-import smtplib
-from email.message import EmailMessage
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, status
@@ -10,6 +8,7 @@ from pydantic import BaseModel, EmailStr
 
 # Importar configuración y dependencias de seguridad (creadas en security.py)
 from api.security import create_access_token, get_db_connection
+from api.email_otp import enviar_otp
 
 logger = logging.getLogger("agw-cloud-api.auth")
 
@@ -29,66 +28,17 @@ class VerifyCodePayload(BaseModel):
 # Email Helper
 # ---------------------------------------------------------------------------
 def send_otp_email(recipient: str, otp: str):
-    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USERNAME")
-    smtp_pass = os.getenv("SMTP_PASSWORD")
-
-    if not smtp_user or not smtp_pass:
-        logger.error("Credenciales SMTP no configuradas. Simulando envío.")
-        logger.info(f"SIMULADO: Enviado OTP {otp} a {recipient}")
-        return
-
-    msg = EmailMessage()
-    msg["Subject"] = "Tu código de acceso - Vital Crop AGW"
-    msg["From"] = f"Vital Crop <{smtp_user}>"
-    msg["To"] = recipient
-
-    # HTML Body Profesional
-    html_content = f"""
-    <html>
-    <body style="font-family: Arial, sans-serif; background-color: #f4f6f8; margin: 0; padding: 20px;">
-        <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; padding: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            <header style="border-bottom: 2px solid #10b981; padding-bottom: 20px; text-align: center;">
-                <h1 style="color: #047857; margin: 0;">Vital Crop</h1>
-                <p style="color: #6b7280; font-size: 14px; margin-top: 5px;">VitalCrop AGW Dashboard</p>
-            </header>
-            <main style="padding-top: 20px;">
-                <h3 style="color: #374151;">Hola,</h3>
-                <p style="color: #4b5563; line-height: 1.6;">
-                    Has solicitado iniciar sesión en el Dashboard Agrícola. Usa el siguiente código de 6 dígitos para acceder a tu entorno seguro:
-                </p>
-                <div style="text-align: center; margin: 30px 0;">
-                    <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #10b981; padding: 10px 20px; border: 2px dashed #10b981; border-radius: 8px;">
-                        {otp}
-                    </span>
-                </div>
-                <p style="color: #4b5563; text-align: center; font-size: 14px;">
-                    Este código expirará en <strong>10 minutos</strong>.
-                </p>
-            </main>
-            <footer style="margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 15px; text-align: center; font-size: 12px; color: #9ca3af;">
-                <p>Si no solicitaste este código, puedes ignorar este correo de forma segura.</p>
-                <p>© 2026 Vital Crop IoT. Todos los derechos reservados.</p>
-            </footer>
-        </div>
-    </body>
-    </html>
     """
-    msg.add_alternative(html_content, subtype='html')
+    Envia el codigo. Delega en Resend (api/email_otp.py).
 
-    try:
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
-            logger.info(f"Correo enviado exitosamente a {recipient}")
-    except Exception as e:
-        logger.error(f"Error enviando correo SMTP: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="No se pudo enviar el correo de verificación."
-        )
+    Antes esto hablaba SMTP con Gmail y, al fallar, lanzaba un 500 que
+    dejaba el login atascado en el paso del correo: el usuario nunca
+    llegaba al campo del codigo. Ahora un fallo de envio se registra y
+    request-code sigue devolviendo 200, porque el codigo ya esta en la
+    base y es recuperable del log.
+    """
+    enviar_otp(recipient, otp, minutos=10)
+
 
 # ---------------------------------------------------------------------------
 # Endpoints
