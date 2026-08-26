@@ -21,7 +21,17 @@ Environment variables (cargadas por api/_env.py desde .env):
 Author: Vital Crop / agw-cloud-api
 """
 
-import api._env  # noqa: F401  — carga .env antes de leer os.environ
+# La raiz del proyecto tiene que estar en sys.path ANTES del primer
+# "import api.*". En local sobra —uvicorn se lanza desde la raiz— pero
+# Vercel importa este archivo por su ruta, y sin esto la funcion muere
+# al arrancar con ModuleNotFoundError: No module named 'api'.
+import sys as _sys
+from pathlib import Path as _Path
+_RAIZ = str(_Path(__file__).resolve().parent.parent)
+if _RAIZ not in _sys.path:
+    _sys.path.insert(0, _RAIZ)
+
+import api._env  # noqa: F401,E402  — carga .env antes de leer os.environ
 
 import os
 import json
