@@ -279,3 +279,146 @@ async def delete_node(node_uuid: str, current_user: dict = Depends(get_current_u
     if not row:
         raise HTTPException(status_code=404, detail="Nodo no encontrado.")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Inventario agregado
+# ---------------------------------------------------------------------------
+#
+# POR QUÉ EXISTE ESTE ENDPOINT
+#
+# El dashboard y la página de dispositivos pedían GET /api/devices y
+# recibían un 404: solo existían /gateways y /gateways/{uuid}/nodes. Por
+# eso ambas pantallas salían vacías aunque la tabla tuviera el gateway y
+# el nodo dados de alta desde el primer día.
+#
+# Podría haberse resuelto en el navegador encadenando las dos llamadas,
+# pero el estado que de verdad importa —si el aparato está vivo— no está
+# en esas tablas: está en la telemetría. Resolverlo aquí evita además una
+# cascada de peticiones por cada gateway.
+#
+# El estado se deduce del silencio, no de una columna: un nodo no avisa
+# de que se murió. El umbral es tres veces la cadencia de publicación
+# (300 s), suficiente para no marcar una caída por perder una trama.
+
+_SILENCIO_ALERTA_S = 900      # 3 cadencias perdidas -> ERROR
+_SILENCIO_CAIDA_S = 3600      # una hora sin hablar  -> OFFLINE
+
+
+@devices_router.get(
+    "",
+    summary="Inventario completo con el estado deducido de la telemetría",
+)
+async def inventario(current_user: dict = Depends(get_current_user)):
+    """
+    Devuelve gateways y nodos en una sola lista plana, que es como los
+    pinta la interfaz. El gateway hereda el estado del nodo más reciente
+    que cuelga de él: si sus nodos publican, el gateway está enrutando.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            WITH ultima AS (
+                -- DISTINCT ON es la forma barata en Postgres de coger la
+                -- última fila por sensor: usa el índice y no ordena todo.
+                SELECT DISTINCT ON (sensor_id)
+                       sensor_id, t_rx, fw, rssi, temperatura,
+                       humedad_ambiente, ec, agua, uptime_ms
+                FROM public.telemetria_indoor
+                ORDER BY sensor_id, t_rx DESC
+            )
+            SELECT n.id, n.sensor_id, n.node_type, n.alias, n.created_at,
+                   g.gateway_id, g.alias AS gateway_alias,
+                   u.t_rx, u.fw, u.rssi, u.temperatura,
+                   u.humedad_ambiente, u.ec, u.agua, u.uptime_ms,
+                   EXTRACT(EPOCH FROM (now() - u.t_rx)) AS silencio_s
+            FROM public.edge_nodes n
+            JOIN public.gateways g ON g.id = n.gateway_id
+            LEFT JOIN ultima u ON u.sensor_id = n.sensor_id
+            WHERE g.user_id = %s
+            ORDER BY n.created_at
+            """,
+            (current_user["id"],),
+        )
+        nodos = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(
+            """
+            SELECT id, gateway_id, alias, created_at
+            FROM public.gateways WHERE user_id = %s ORDER BY created_at
+            """,
+            (current_user["id"],),
+        )
+        gws = [dict(r) for r in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+    def _estado(silencio) -> str:
+        if silencio is None:
+            return "MAINTENANCE"        # dado de alta pero nunca publicó
+        if silencio > _SILENCIO_CAIDA_S:
+            return "OFFLINE"
+        if silencio > _SILENCIO_ALERTA_S:
+            return "ERROR"
+        return "ONLINE"
+
+    salida: List[dict] = []
+
+    # Silencio mínimo entre los nodos de cada gateway: el gateway está tan
+    # vivo como su nodo más despierto.
+    silencio_por_gw: dict = {}
+    for n in nodos:
+        s = n["silencio_s"]
+        if s is None:
+            continue
+        gid = n["gateway_id"]
+        silencio_por_gw[gid] = min(silencio_por_gw.get(gid, s), float(s))
+
+    for g in gws:
+        sil = silencio_por_gw.get(g["gateway_id"])
+        salida.append({
+            "id": str(g["id"]),
+            "device_uid": g["gateway_id"],
+            "device_type": "GATEWAY",
+            "status": _estado(sil),
+            "last_seen": None,
+            "alias": g["alias"],
+            "location": "Cultivo indoor · hierbabuena",
+            "description": "Nodo fog: broker MQTT, motor de reglas y buffer local",
+            "gateway_id": g["gateway_id"],
+            "created_at": g["created_at"].isoformat() if g["created_at"] else None,
+            "silencio_s": sil,
+        })
+
+    for n in nodos:
+        sil = float(n["silencio_s"]) if n["silencio_s"] is not None else None
+        salida.append({
+            "id": str(n["id"]),
+            "device_uid": n["sensor_id"],
+            "sensor_id": n["sensor_id"],
+            "device_type": n["node_type"],
+            "status": _estado(sil),
+            "last_seen": n["t_rx"].isoformat() if n["t_rx"] else None,
+            "alias": n["alias"],
+            "location": "Cultivo indoor · hierbabuena",
+            "description": "Nodo ESP32: sensores, relés y ciclos de riego",
+            "firmware_version": n["fw"],
+            "gateway_id": n["gateway_id"],
+            "created_at": n["created_at"].isoformat() if n["created_at"] else None,
+            "silencio_s": sil,
+            # La última lectura viaja con el inventario para que las
+            # tarjetas muestren algo sin una segunda petición por nodo.
+            "ultima_lectura": {
+                "temperatura": float(n["temperatura"]) if n["temperatura"] is not None else None,
+                "humedad": float(n["humedad_ambiente"]) if n["humedad_ambiente"] is not None else None,
+                "ec": float(n["ec"]) if n["ec"] is not None else None,
+                "rssi": n["rssi"],
+                "agua": n["agua"],
+                "uptime_ms": n["uptime_ms"],
+            },
+        })
+
+    return salida
