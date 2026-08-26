@@ -28,7 +28,7 @@ Authorization: Bearer <API_TOKEN>
 | Content-Type | `application/json` |
 | Autenticación | `Bearer Token` (header `Authorization`) |
 | Timeout recomendado | 30 segundos |
-| Pooler BD | Supabase Transaction Pooler — puerto `6543` |
+| Pooler BD | Neon PostgreSQL — endpoint pooled (PgBouncer) |
 
 ---
 
@@ -68,7 +68,7 @@ Host: tu-proyecto.vercel.app
 
 ### 2. `GET /api/health` — Detailed Health Check
 
-**Propósito:** Verifica el estado de la API **y** la conectividad con la base de datos PostgreSQL en Supabase. Esencial para monitoreo y alertas de infraestructura.
+**Propósito:** Verifica el estado de la API **y** la conectividad con la base de datos Neon PostgreSQL. Esencial para monitoreo y alertas de infraestructura.
 
 **Autenticación:** ❌ No requerida
 
@@ -86,7 +86,7 @@ Host: tu-proyecto.vercel.app
   "database": {
     "status": "connected",
     "latency_ms": 42.17,
-    "pooler": "supabase-transaction-pooler"
+    "pooler": "neon-pgbouncer-transaction"
   },
   "timestamp": "2026-03-28T23:45:00.123456+00:00"
 }
@@ -100,7 +100,7 @@ Host: tu-proyecto.vercel.app
   "database": {
     "status": "unreachable",
     "latency_ms": null,
-    "pooler": "supabase-transaction-pooler"
+    "pooler": "neon-pgbouncer-transaction"
   },
   "timestamp": "2026-03-28T23:45:00.123456+00:00"
 }
@@ -119,7 +119,7 @@ Host: tu-proyecto.vercel.app
 
 ### 3. `POST /api/telemetria` — Ingerir Telemetría
 
-**Propósito:** Recibe y persiste una lectura de sensores enviada por el Gateway Fog (Raspberry Pi). Inserta un registro en la tabla `telemetria_indoor` de Supabase.
+**Propósito:** Recibe y persiste una lectura de sensores enviada por el Gateway Fog (Raspberry Pi). Inserta un registro en la tabla `telemetria_indoor` de Neon.
 
 **Autenticación:** ✅ **Requerida** — `Bearer Token`
 
@@ -396,7 +396,7 @@ Retorna los nodos (Gateway o ESP32) asociados al operador.
 
 | Variable | Requerida | Descripción |
 |---|---|---|
-| `DATABASE_URL` | ✅ | Connection string del Supabase Transaction Pooler (puerto 6543) |
+| `DATABASE_URL` | ✅ | Connection string del endpoint pooled de Neon |
 | `API_TOKEN` | ✅ | Bearer token estático compartido con el Fog Node |
 
 ---
@@ -453,7 +453,7 @@ vercel login
 
 # Establecer variables de entorno en producción
 vercel env add DATABASE_URL production
-# → Pegar: postgresql://postgres.sayqxmtvqaeyxhyptgpw:...@pooler.supabase.com:6543/postgres
+# -> Pegar el DATABASE_URL de Neon (host con sufijo '-pooler')
 
 vercel env add API_TOKEN production
 # → Pegar: tu-token-de-32-bytes-generado
@@ -462,10 +462,10 @@ vercel env add API_TOKEN production
 vercel --prod
 ```
 
-### Paso 3 — Aplicar migración en Supabase
+### Paso 3 — Aplicar migración en Neon
 
 ```sql
--- Ejecutar en: Supabase Dashboard → SQL Editor → New Query
+-- Ejecutar con: cd agw-cloud-api && python migrate.py
 -- Archivo: migrations/011_create_telemetria_indoor.sql
 ```
 
@@ -487,7 +487,7 @@ chmod +x test_api.sh
 
 ```
 ESP32 Zona A ──┐
-ESP32 Zona B ──┤──► Raspberry Pi (Fog Gateway) ──► POST /api/telemetria ──► Supabase
+ESP32 Zona B ──┤──► Raspberry Pi (Fog Gateway) ──► POST /api/telemetria ──► Neon
 ESP32 Zona N ──┘         (agw-edge-raspberry)            (agw-cloud-api)    (telemetria_indoor)
                                                                 │
                                                                 ▼

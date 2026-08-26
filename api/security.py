@@ -1,3 +1,5 @@
+import api._env  # noqa: F401  — carga .env antes de leer os.environ
+
 import os
 import jwt
 import logging
@@ -16,12 +18,11 @@ import psycopg2
 
 logger = logging.getLogger("agw-cloud-api.security")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres.sayqxmtvqaeyxhyptgpw:pg-crops-+4@aws-1-us-east-1.pooler.supabase.com:6543/postgres",
-)
-API_TOKEN = os.getenv("API_TOKEN", "dev-token-change-in-production")
-JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
+# Neon PostgreSQL (endpoint pooled). Sin fallback embebido: una credencial
+# en el código es un riesgo y oculta errores de configuración.
+DATABASE_URL = os.environ["DATABASE_URL"]
+API_TOKEN = os.environ["API_TOKEN"]
+JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440")) # 24 horas por defecto
 

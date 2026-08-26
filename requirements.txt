@@ -1,38 +1,34 @@
 # ============================================================
 # requirements.txt — agw-cloud-api
-# Vercel Serverless (Python 3.11) + Local dev
+# Vercel Serverless (Python) + desarrollo local
+# ============================================================
+#  SIN VERSIONES FIJAS a propósito, salvo donde importa.
+#
+#  Las versiones ancladas de antes (fastapi 0.110, pydantic 2.6) no
+#  tienen rueda precompilada para Python 3.13+: pip intenta compilar
+#  pydantic-core desde Rust y falla. Eso rompía tanto el arranque local
+#  como el build de Vercel, que elige el intérprete por su cuenta.
+#
+#  Solo se deja lo estrictamente necesario para que la función arranque.
+#  Todo lo que sobra en un despliegue serverless alarga el build y sube
+#  el tamaño del bundle, que en Vercel tiene tope.
 # ============================================================
 
-# ── API Framework ─────────────────────────────────────────
-fastapi==0.110.0
-uvicorn[standard]==0.29.0
+# ── API ───────────────────────────────────────────────────
+fastapi
+pydantic
+python-multipart
 
-# ── Pydantic v2 ───────────────────────────────────────────
-pydantic==2.6.0
-pydantic-settings==2.2.0
+# ── Base de datos ─────────────────────────────────────────
+#  psycopg2-binary y no psycopg2: la versión source necesita compilar
+#  contra libpq, que no está en el entorno de build de Vercel.
+psycopg2-binary
 
-# ── Database — Synchronous (Vercel Serverless compatible) ─
-# psycopg2-binary: Supabase Transaction Pooler (port 6543)
-psycopg2-binary==2.9.9
+# ── Autenticación ─────────────────────────────────────────
+PyJWT
+email-validator
 
-# ── Database — Async (local dev / Docker container) ───────
-asyncpg==0.29.0
-sqlalchemy[asyncio]==2.0.29
-alembic==1.13.1
-
-# ── Auth (JWT + password hashing — used by main app) ──────
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-PyJWT==2.8.0
-email-validator==2.1.1
-
-# ── HTTP client ───────────────────────────────────────────
-httpx==0.27.0
-
-# ── Utilities ─────────────────────────────────────────────
-python-multipart==0.0.9
-structlog==24.1.0
-
-# ── Testing ───────────────────────────────────────────────
-pytest==8.1.1
-pytest-asyncio==0.23.6
+# ── Servidor local ────────────────────────────────────────
+#  Vercel no lo usa —invoca la app ASGI directamente— pero hace falta
+#  para `uvicorn api.index:app` en desarrollo.
+uvicorn

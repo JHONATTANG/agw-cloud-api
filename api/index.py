@@ -1,10 +1,10 @@
 """
-api/index.py — Vercel Serverless entry point for agw-cloud-api
+api/index.py — FastAPI entrypoint — agw-cloud-api
 ==============================================================
 This module is the single file that Vercel executes as a Python
 Serverless Function.  It bootstraps a lightweight FastAPI app that:
 
-  • Connects to Supabase via the *Transaction Pooler* (port 6543) using
+  • Connects to Neon PostgreSQL via its pooled endpoint (PgBouncer) using
     psycopg2 (synchronous), which is compatible with serverless cold-starts
     because connection pools are opened per-request.
   • Exposes a static Bearer Token middleware (reads API_TOKEN env var).
@@ -14,12 +14,14 @@ Serverless Function.  It bootstraps a lightweight FastAPI app that:
       POST /api/telemetria        → ingest telemetry from Fog Node
       GET  /api/telemetria/{node_id} → last 50 records for a node
 
-Environment variables (set in Vercel project settings):
-  DATABASE_URL  – Transaction Pooler connection string (port 6543)
+Environment variables (cargadas por api/_env.py desde .env):
+  DATABASE_URL  – Neon pooled connection string (host con sufijo '-pooler')
   API_TOKEN     – Static Bearer token shared with the Raspberry Pi gateway
 
 Author: Vital Crop / agw-cloud-api
 """
+
+import api._env  # noqa: F401  — carga .env antes de leer os.environ
 
 import os
 import json
@@ -37,6 +39,8 @@ from pydantic import BaseModel, Field
 
 # Importar los nuevos APIRouters de gestión
 from api.routers.auth import auth_router
+from api.routers.metricas import metricas_router
+from api.routers.iot import iot_router
 from api.routers.users import users_router
 from api.routers.devices import devices_router
 
@@ -49,13 +53,16 @@ logger = logging.getLogger("agw-cloud-api")
 # ---------------------------------------------------------------------------
 # Configuration — loaded from environment at cold-start
 # ---------------------------------------------------------------------------
-DATABASE_URL: str = os.getenv(
-    "DATABASE_URL",
-    # Fallback: Supabase Transaction Pooler (development only)
-    "postgresql://postgres.sayqxmtvqaeyxhyptgpw:pg-crops-+4@aws-1-us-east-1.pooler.supabase.com:6543/postgres",
-)
+# Neon PostgreSQL — usar SIEMPRE el endpoint pooled (host con "-pooler"),
+# que es PgBouncer en modo transacción y tolera el patrón serverless de
+# abrir una conexión por petición.
+#
+# Sin fallback a propósito: una credencial embebida en el código es un
+# riesgo de seguridad y además enmascara errores de configuración. Si la
+# variable no está definida, la función debe fallar en frío y ruidosamente.
+DATABASE_URL: str = os.environ["DATABASE_URL"]
 
-API_TOKEN: str = os.getenv("API_TOKEN", "dev-token-change-in-production")
+API_TOKEN: str = os.environ["API_TOKEN"]
 
 # ---------------------------------------------------------------------------
 # FastAPI app instance
@@ -78,6 +85,8 @@ app = FastAPI(
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(devices_router)
+app.include_router(metricas_router)
+app.include_router(iot_router)
 
 # ---------------------------------------------------------------------------
 # CORS
@@ -158,6 +167,41 @@ class TelemetriaPayload(BaseModel):
         examples=['{"bomba": "ON", "lampara": "ON", "ventilador": "OFF"}'],
     )
 
+    # ── Telecomunicaciones y proceso (migracion 002) ──────────
+    #  El nodo publicaba todo esto desde hace semanas y la ingesta lo
+    #  descartaba, asi que el eje evaluativo del proyecto —el desempeno
+    #  de la cadena de comunicacion— no tenia donde guardarse.
+    #  Todos opcionales: un gateway con version anterior sigue siendo
+    #  un cliente valido y simplemente manda menos campos.
+    rssi: Optional[int] = Field(
+        None, ge=-120, le=0, description="Potencia recibida del enlace WiFi en dBm"
+    )
+    ec: Optional[float] = Field(
+        None, ge=0.0, le=20000.0, description="Conductividad de la solucion en uS/cm"
+    )
+    tds: Optional[float] = Field(
+        None, ge=0.0, le=10000.0, description="Solidos disueltos totales en ppm"
+    )
+    agua: Optional[bool] = Field(
+        None, description="Detector de nivel: hay agua en el sustrato"
+    )
+    fw: Optional[str] = Field(
+        None, max_length=16, description="Version de firmware del nodo"
+    )
+    uptime_ms: Optional[int] = Field(
+        None, ge=0,
+        description="Uptime del nodo. Su retroceso delata un reinicio; el salto "
+                    "entre tramas, junto a periodo_ms, da la perdida de mensajes",
+    )
+    periodo_ms: Optional[int] = Field(
+        None, ge=0, description="Cadencia de telemetria vigente en el nodo"
+    )
+    t_rx: Optional[datetime] = Field(
+        None,
+        description="Instante en que el gateway recibio la trama. Con created_at "
+                    "da la latencia de subida sin instrumentacion extra",
+    )
+
 
 class TelemetriaResponse(BaseModel):
     """Respuesta de un registro de telemetría."""
@@ -193,7 +237,7 @@ async def root():
 @app.get("/api/health", tags=["Health"], summary="Detailed health check")
 async def health_check():
     """
-    Verifica la conectividad con la base de datos PostgreSQL (Supabase).
+    Verifica la conectividad con la base de datos Neon PostgreSQL.
     Usado por Vercel para validar que la función serverless responde.
     """
     db_status = "unknown"
@@ -221,7 +265,7 @@ async def health_check():
         "database": {
             "status": db_status,
             "latency_ms": db_latency_ms,
-            "pooler": "supabase-transaction-pooler",
+            "pooler": "neon-pgbouncer-transaction",
         },
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -243,17 +287,22 @@ async def post_telemetria(
 ):
     """
     Recibe lecturas de sensores del Gateway Raspberry Pi y las persiste
-    en la tabla `telemetria_indoor` de Supabase.
+    en la tabla `telemetria_indoor` de Neon.
 
     **Requiere** header: `Authorization: Bearer <API_TOKEN>`
     """
+    # origen='directo' distingue esta fila del relleno historico: solo
+    # sobre las directas tiene sentido medir la latencia de subida.
     INSERT_SQL = """
         INSERT INTO telemetria_indoor
             (node_id, sensor_id, temperatura, humedad_ambiente,
-             humedad_suelo, ph, estado_actuadores)
+             humedad_suelo, ph, estado_actuadores,
+             rssi, ec, tds, agua, fw, uptime_ms, periodo_ms, t_rx, origen)
         VALUES
             (%(node_id)s, %(sensor_id)s, %(temperatura)s, %(humedad_ambiente)s,
-             %(humedad_suelo)s, %(ph)s, %(estado_actuadores)s)
+             %(humedad_suelo)s, %(ph)s, %(estado_actuadores)s,
+             %(rssi)s, %(ec)s, %(tds)s, %(agua)s, %(fw)s, %(uptime_ms)s,
+             %(periodo_ms)s, COALESCE(%(t_rx)s, now()), 'directo')
         RETURNING id, created_at;
     """
     try:

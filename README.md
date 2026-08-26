@@ -11,7 +11,7 @@
 Dashboard (Next.js) ─── REST/JWT ──► Cloud API (FastAPI)
 Edge Gateway (RPi)  ─── REST/Token ─► Cloud API (FastAPI)
                                           │
-                                     Supabase (PostgreSQL)
+                                     Neon (PostgreSQL 18)
 ```
 
 ---
@@ -22,7 +22,7 @@ Edge Gateway (RPi)  ─── REST/Token ─► Cloud API (FastAPI)
 
 ```bash
 cp .env.example .env
-# Edit .env with your Supabase credentials and secret key
+# Edit .env with your Neon DATABASE_URL and secrets
 ```
 
 ### 2. Run with Docker Compose
@@ -106,7 +106,7 @@ API docs: http://localhost:8000/docs
 
 ## Database Migrations
 
-Run migrations manually against your Supabase/PostgreSQL instance:
+Run migrations with `python migrate.py` against Neon:
 
 ```bash
 psql $DATABASE_URL -f migrations/001_initial_schema.sql
