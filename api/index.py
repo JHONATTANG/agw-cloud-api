@@ -313,6 +313,7 @@ async def post_telemetria(
              %(humedad_suelo)s, %(ph)s, %(estado_actuadores)s,
              %(rssi)s, %(ec)s, %(tds)s, %(agua)s, %(fw)s, %(uptime_ms)s,
              %(periodo_ms)s, COALESCE(%(t_rx)s, now()), 'directo')
+        ON CONFLICT (sensor_id, t_rx) WHERE t_rx IS NOT NULL DO NOTHING
         RETURNING id, created_at;
     """
     try:
@@ -323,6 +324,21 @@ async def post_telemetria(
         conn.commit()
         cur.close()
         conn.close()
+
+        # ON CONFLICT DO NOTHING no devuelve fila. Eso no es un error:
+        # significa que esta trama ya estaba, y el gateway la esta
+        # reenviando porque no llego a recibir el acuse anterior.
+        # Responder 200 es lo correcto — el gateway la marca como
+        # sincronizada y deja de reintentar. Devolver un error la
+        # dejaria atascada en su buffer para siempre.
+        if row is None:
+            logger.info("Trama duplicada, ya estaba: %s @ %s",
+                        payload.sensor_id, payload.t_rx)
+            return {
+                "status": "duplicate",
+                "node_id": payload.node_id,
+                "sensor_id": payload.sensor_id,
+            }
     except Exception as exc:
         logger.error("Error al insertar telemetría: %s", exc)
         raise HTTPException(
