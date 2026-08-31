@@ -41,9 +41,39 @@ logger = logging.getLogger("agw-cloud-api.metricas")
 
 metricas_router = APIRouter(prefix="/api/metricas", tags=["Telecomunicaciones"])
 
+#  Todas las consultas de este modulo van contra `telemetria_real`, no
+#  contra `telemetria_indoor`. La vista excluye los nodos marcados como
+#  simulados en `edge_nodes` (migracion 006).
+#
+#  Es deliberado y no una optimizacion: las cifras del §9 —perdida,
+#  jitter, RSSI, latencia— describen un enlace fisico concreto medido
+#  durante semanas. Un nodo cuyos sensores genera el propio firmware
+#  sirve para probar la capacidad multinodo del punto de acceso, pero
+#  promediar sus tramas con las reales daria un numero que no describe
+#  ningun enlace y que no se podria sostener si preguntan de donde sale.
+#
+#  El panel de cultivos si usa la tabla completa: alli lo que interesa
+#  es lo que cada cultivo reporta, simulado o no.
+
 # Frontera entre la trama que sube en caliente y la que se recupera del
 # buffer tras un corte. Ver la nota en `resumen()`.
 _UMBRAL_EN_VIVO_MS = 60_000
+
+# Zona del cultivo. Neon abre las sesiones en GMT, asi que
+# `EXTRACT(HOUR FROM t_rx)` devolvia la hora UTC: el perfil horario, los
+# mapas de calor y los cortes de dia salian corridos cinco horas. La
+# banda del fotoperiodo aparecia entre las 11 y las 22 en vez de entre
+# las 6 y las 18, y era facil no notarlo porque la FORMA era correcta.
+#
+# Se convierte explicitamente en cada consulta en vez de fijar la zona
+# de la sesion: el pool de conexiones de Vercel reutiliza sesiones entre
+# invocaciones y un SET perdido daria resultados distintos segun a que
+# conexion tocara. Explicito y por consulta no puede perderse.
+#
+# Colombia no aplica horario de verano, pero se usa el nombre de la zona
+# y no un desplazamiento fijo para que no haya que tocar esto si algun
+# dia se despliega en otro sitio.
+_ZONA = "America/Bogota"
 
 # Ventana por defecto de casi todas las consultas. 7 días entra holgado
 # en memoria del navegador y cubre el ciclo semanal del cultivo.
@@ -94,7 +124,7 @@ async def resumen(
                MAX(t_rx)                             AS hasta,
                COUNT(DISTINCT sensor_id)             AS nodos,
                COUNT(DISTINCT fw)                    AS versiones_fw
-        FROM telemetria_indoor
+        FROM telemetria_real
         WHERE t_rx > now() - (%s || ' days')::interval {filtro}
     """, p)
 
@@ -108,7 +138,7 @@ async def resumen(
                PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY rssi) AS p95,
                ROUND(100.0 * SUM(CASE WHEN rssi < -70 THEN 1 ELSE 0 END)
                      / NULLIF(COUNT(*), 0), 1)       AS pct_bajo_umbral
-        FROM telemetria_indoor
+        FROM telemetria_real
         WHERE rssi IS NOT NULL
           AND t_rx > now() - (%s || ' days')::interval {filtro}
     """, p)
@@ -119,7 +149,7 @@ async def resumen(
         WITH s AS (
             SELECT sensor_id, t_rx, uptime_ms, periodo_ms,
                    uptime_ms - LAG(uptime_ms) OVER w AS d_up
-            FROM telemetria_indoor
+            FROM telemetria_real
             WHERE uptime_ms IS NOT NULL AND periodo_ms > 0
               AND t_rx > now() - (%s || ' days')::interval {filtro}
             WINDOW w AS (PARTITION BY sensor_id ORDER BY t_rx)
@@ -154,7 +184,7 @@ async def resumen(
         WITH s AS (
             SELECT t_rx, uptime_ms,
                    LAG(uptime_ms) OVER (PARTITION BY sensor_id ORDER BY t_rx) AS prev
-            FROM telemetria_indoor
+            FROM telemetria_real
             WHERE uptime_ms IS NOT NULL
               AND t_rx > now() - (%s || ' days')::interval {filtro}
         )
@@ -244,11 +274,11 @@ async def heatmap(
     p = (dias, sensor_id) if sensor_id else (dias,)
 
     filas = _filas(f"""
-        SELECT date_trunc('day', t_rx)::date  AS dia,
+        SELECT date_trunc('day', t_rx AT TIME ZONE '{_ZONA}')::date  AS dia,
                EXTRACT(hour FROM t_rx)::int   AS hora,
                {agregado}                     AS valor,
                COUNT(*)                       AS muestras
-        FROM telemetria_indoor
+        FROM telemetria_real
         WHERE t_rx > now() - (%s || ' days')::interval {cond} {filtro}
         GROUP BY 1, 2 ORDER BY 1, 2
     """, p)
@@ -286,7 +316,7 @@ async def series(
                    MIN({metrica})                     AS minimo,
                    MAX({metrica})                     AS maximo,
                    COUNT(*)                           AS n
-            FROM telemetria_indoor
+            FROM telemetria_real
             WHERE {metrica} IS NOT NULL
               AND t_rx > now() - (%s || ' days')::interval {filtro}
             GROUP BY 1 ORDER BY 1
@@ -308,7 +338,7 @@ async def distribucion(
     """
     rango = _una(f"""
         SELECT MIN({metrica}) AS lo, MAX({metrica}) AS hi, COUNT(*) AS n
-        FROM telemetria_indoor
+        FROM telemetria_real
         WHERE {metrica} IS NOT NULL AND t_rx > now() - (%s || ' days')::interval
     """, (dias,))
 
@@ -323,7 +353,7 @@ async def distribucion(
     filas = _filas(f"""
         WITH d AS (
             SELECT LEAST(FLOOR(({metrica} - %s) / %s), %s - 1) AS bin
-            FROM telemetria_indoor
+            FROM telemetria_real
             WHERE {metrica} IS NOT NULL AND t_rx > now() - (%s || ' days')::interval
         )
         SELECT bin::int AS bin, COUNT(*) AS n
@@ -387,8 +417,8 @@ async def riego(
     cabe entre dos tramas de 5 y desaparecería del recuento.
     """
     return {
-        "por_dia": _filas("""
-            SELECT ts::date                                     AS dia,
+        "por_dia": _filas(f"""
+            SELECT (ts AT TIME ZONE '{_ZONA}')::date                AS dia,
                    COUNT(*)                                     AS ciclos,
                    ROUND(SUM((detalle->>'segundos')::numeric) / 60.0, 1) AS min_bomba,
                    MIN((detalle->>'segundos')::int)             AS s_min,
@@ -415,7 +445,7 @@ async def gateway(
     ultimo = _una("""
         SELECT MAX(t_rx) AS ultima_trama,
                EXTRACT(EPOCH FROM (now() - MAX(t_rx))) AS hace_s
-        FROM telemetria_indoor
+        FROM telemetria_real
     """)
 
     hace = ultimo.get("hace_s") or 0
@@ -426,11 +456,11 @@ async def gateway(
         # tres periodos sin noticias ya no es jitter, es un problema.
         "estado": "en linea" if hace < 900 else "sin noticias",
         "ingesta_en_vivo": _una("""
-            SELECT COUNT(*) AS n FROM telemetria_indoor WHERE origen = 'directo'
+            SELECT COUNT(*) AS n FROM telemetria_real WHERE origen = 'directo'
         """).get("n", 0),
         "por_origen": _filas("""
             SELECT origen, COUNT(*) AS n, MIN(t_rx) AS desde, MAX(t_rx) AS hasta
-            FROM telemetria_indoor GROUP BY 1
+            FROM telemetria_real GROUP BY 1
         """),
         "eventos_recientes": _filas("""
             SELECT ts, evento, sensor_id FROM node_eventos
@@ -469,7 +499,7 @@ async def fog(
                EXTRACT(EPOCH FROM (MAX(t_rx) - MIN(t_rx))) / 86400.0 AS dias,
                COUNT(*) FILTER (WHERE origen = 'backfill') AS sin_nube,
                COUNT(*) FILTER (WHERE origen = 'directo')  AS con_nube
-        FROM telemetria_indoor
+        FROM telemetria_real
     """)
 
     # Decisiones que tomó el borde por su cuenta, por tipo.
@@ -485,10 +515,10 @@ async def fog(
 
     # Riego ejecutado sin que la nube supiera nada. Es el argumento
     # central: el cultivo no dependio de la conectividad.
-    riego = _una("""
+    riego = _una(f"""
         SELECT COUNT(*) AS ciclos,
                ROUND(SUM((detalle->>'segundos')::numeric) / 60.0, 1) AS minutos_bomba,
-               COUNT(DISTINCT ts::date) AS dias_con_riego
+               COUNT(DISTINCT (ts AT TIME ZONE '{_ZONA}')::date) AS dias_con_riego
         FROM node_eventos
         WHERE evento = 'riego_hidroponia_fin'
           AND ts > now() - (%s || ' days')::interval
@@ -523,7 +553,7 @@ async def fog(
             SELECT t_rx,
                    LAG(t_rx) OVER (ORDER BY t_rx) AS prev,
                    periodo_ms
-            FROM telemetria_indoor
+            FROM telemetria_real
             WHERE t_rx > now() - (%s || ' days')::interval
         )
         SELECT prev AS desde, t_rx AS hasta,
@@ -622,7 +652,7 @@ async def multiserie(
                COUNT(t.id) AS n,
                {cols}
         FROM rejilla r
-        LEFT JOIN telemetria_indoor t
+        LEFT JOIN telemetria_real t
                ON t.t_rx >= r.t0
               AND t.t_rx <  r.t0 + (%s || ' minutes')::interval
         GROUP BY r.t0 ORDER BY r.t0
@@ -653,9 +683,9 @@ async def diario(
     qué ritmo estaba publicando en ese momento.
     """
     return {
-        "dias": _filas("""
+        "dias": _filas(f"""
             WITH t AS (
-                SELECT date_trunc('day', t_rx) AS dia,
+                SELECT date_trunc('day', t_rx AT TIME ZONE '{_ZONA}') AS dia,
                        COUNT(*)                AS tramas,
                        ROUND(AVG(rssi)::numeric, 1)             AS rssi_medio,
                        MIN(rssi)                                AS rssi_min,
@@ -664,16 +694,16 @@ async def diario(
                        ROUND(AVG(ec)::numeric, 1)               AS ec_media,
                        ROUND(AVG(periodo_ms)::numeric, 0)       AS periodo_ms,
                        COUNT(*) FILTER (WHERE rssi < -70)       AS tramas_rssi_bajo
-                FROM telemetria_indoor
+                FROM telemetria_real
                 WHERE t_rx > now() - (%s || ' days')::interval
                 GROUP BY 1
             ),
             reinicios AS (
-                SELECT date_trunc('day', t_rx) AS dia, COUNT(*) AS n
+                SELECT date_trunc('day', t_rx AT TIME ZONE '{_ZONA}') AS dia, COUNT(*) AS n
                 FROM (
                     SELECT t_rx, uptime_ms,
                            LAG(uptime_ms) OVER (ORDER BY t_rx) AS prev
-                    FROM telemetria_indoor
+                    FROM telemetria_real
                     WHERE t_rx > now() - (%s || ' days')::interval
                       AND uptime_ms IS NOT NULL
                 ) s
@@ -681,7 +711,7 @@ async def diario(
                 GROUP BY 1
             ),
             riego AS (
-                SELECT date_trunc('day', ts) AS dia,
+                SELECT date_trunc('day', ts AT TIME ZONE '{_ZONA}') AS dia,
                        COUNT(*) AS ciclos,
                        ROUND(SUM((detalle->>'segundos')::numeric) / 60, 1) AS min_bomba
                 FROM node_eventos
@@ -743,8 +773,8 @@ async def correlacion(
     puntos = _filas(f"""
         SELECT ROUND({cx}::numeric, 2) AS x,
                ROUND({cy}::numeric, 2) AS y,
-               EXTRACT(HOUR FROM t_rx)::int AS hora
-        FROM telemetria_indoor
+               EXTRACT(HOUR FROM t_rx AT TIME ZONE '{_ZONA}')::int AS hora
+        FROM telemetria_real
         WHERE {cx} IS NOT NULL AND {cy} IS NOT NULL
           AND t_rx > now() - (%s || ' days')::interval
         ORDER BY random() LIMIT %s
@@ -752,7 +782,7 @@ async def correlacion(
 
     coef = _una(f"""
         SELECT ROUND(CORR({cx}, {cy})::numeric, 3) AS r, COUNT(*) AS n
-        FROM telemetria_indoor
+        FROM telemetria_real
         WHERE {cx} IS NOT NULL AND {cy} IS NOT NULL
           AND t_rx > now() - (%s || ' days')::interval
     """, (dias,))
@@ -778,9 +808,34 @@ async def perfil_horario(
     temperatura y sobre el enlace: el balastro y el ventilador son ruido
     electromagnético, y eso se paga en el RSSI.
     """
+    # Numero real de dias con datos en la ventana. Sin esto, quien pinte
+    # "ciclos por hora" tiene que deducirlo del recuento de muestras, y
+    # eso solo funciona si la cadencia fue constante — que no lo fue: paso
+    # de 10 s a 60 s y a 300 s. La deduccion daba divisores absurdos y
+    # ciclos por hora de 0,04 donde debian ser 4.
+    dias_obs = _una("""
+        SELECT COUNT(DISTINCT (t_rx AT TIME ZONE %s)::date) AS n
+        FROM telemetria_real
+        WHERE t_rx > now() - (%s || ' days')::interval
+    """, (_ZONA, dias)).get("n") or 1
+
+    # Los eventos de riego tienen su propio calendario y NO coincide con el
+    # de la telemetria: el firmware que los publica se instalo despues, asi
+    # que hay semanas con tramas y sin eventos. Dividir los ciclos entre los
+    # dias de telemetria daba 0,36 ciclos/hora de dia donde son 4.
+    dias_riego = _una("""
+        SELECT COUNT(DISTINCT (ts AT TIME ZONE %s)::date) AS n
+        FROM node_eventos
+        WHERE evento LIKE 'riego_%%_fin'
+          AND ts > now() - (%s || ' days')::interval
+    """, (_ZONA, dias)).get("n") or 1
+
     return {
-        "horas": _filas("""
-            SELECT EXTRACT(HOUR FROM t_rx)::int          AS hora,
+        "dias_observados": dias_obs,
+        "dias_con_riego": dias_riego,
+        "zona": _ZONA,
+        "horas": _filas(f"""
+            SELECT EXTRACT(HOUR FROM t_rx AT TIME ZONE '{_ZONA}')::int  AS hora,
                    COUNT(*)                              AS n,
                    ROUND(AVG(temperatura)::numeric, 2)   AS temperatura,
                    ROUND(AVG(humedad_ambiente)::numeric, 2) AS humedad,
@@ -788,12 +843,12 @@ async def perfil_horario(
                    ROUND(AVG(rssi)::numeric, 1)          AS rssi,
                    ROUND(STDDEV_SAMP(rssi)::numeric, 2)  AS rssi_sigma,
                    COUNT(*) FILTER (WHERE rssi < -70)    AS rssi_bajo
-            FROM telemetria_indoor
+            FROM telemetria_real
             WHERE t_rx > now() - (%s || ' days')::interval
             GROUP BY 1 ORDER BY 1
         """, (dias,)),
-        "riego_por_hora": _filas("""
-            SELECT EXTRACT(HOUR FROM ts)::int AS hora, COUNT(*) AS ciclos
+        "riego_por_hora": _filas(f"""
+            SELECT EXTRACT(HOUR FROM ts AT TIME ZONE '{_ZONA}')::int AS hora, COUNT(*) AS ciclos
             FROM node_eventos
             WHERE evento LIKE 'riego_%%_fin'
               AND ts > now() - (%s || ' days')::interval

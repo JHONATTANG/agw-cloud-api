@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -185,3 +186,106 @@ async def confirmar(
             detail="La orden no existe o ya estaba entregada",
         )
     return fila
+
+
+# ── Eventos del nodo ──────────────────────────────────────────
+#
+#  POR QUÉ HACÍA FALTA ESTA RUTA
+#
+#  El gateway registraba cada decisión del borde —inicio y fin de cada
+#  ciclo de riego, caídas, reconexiones, correcciones de programa— en su
+#  SQLite local, y ahí se quedaban. El edge solo llamaba a /telemetria,
+#  /health y /commands/pending: no existía ninguna puerta por la que un
+#  evento pudiera entrar.
+#
+#  Los eventos que había en la nube entraron por una carga manual y se
+#  congelaron el 26/08. Cualquier análisis apoyado en ellos —los ciclos
+#  de riego por hora del panel, las decisiones del borde de la página
+#  fog— mostraba cifras de hace días como si fueran de ahora, que es
+#  peor que no mostrarlas.
+#
+#  IDEMPOTENTE POR CONSTRUCCIÓN
+#
+#  La tabla ya traía UNIQUE (sensor_id, ts, evento) de la migración que
+#  la creó. Se aprovecha: el gateway puede reenviar lo que quiera y los
+#  repetidos se descartan en el servidor. Eso permite que el remitente
+#  del borde marque como enviado sin miedo, y que una subida a medias se
+#  reintente entera sin duplicar nada.
+
+
+class EventoEntrada(BaseModel):
+    """Un evento tal como lo registró el gateway."""
+
+    ts: datetime = Field(..., description="Instante del evento, con zona")
+    sensor_id: str = Field(..., min_length=3, max_length=100)
+    evento: str = Field(..., min_length=2, max_length=80)
+    detalle: Optional[dict] = None
+
+
+class LoteEventos(BaseModel):
+    """
+    Los eventos van en lote y no de uno en uno.
+
+    Un ciclo de riego produce dos eventos y el gateway puede acumular
+    cientos tras un corte largo. Con una petición por evento, recuperar
+    un día de desconexión serían cientos de invocaciones sin servidor,
+    cada una con su arranque en frío.
+    """
+
+    gateway_id: str = Field(..., min_length=3, max_length=100)
+    eventos: list[EventoEntrada] = Field(..., min_length=1, max_length=500)
+
+
+@iot_router.post(
+    "/eventos",
+    status_code=status.HTTP_201_CREATED,
+    summary="El gateway sube los eventos que registro en el borde",
+)
+async def ingerir_eventos(
+    lote: LoteEventos,
+    _token: str = Depends(require_iot_token),
+):
+    """
+    Devuelve cuántos entraron y cuántos ya estaban.
+
+    Distinguirlos importa para el remitente: si todo sale como
+    `duplicado` sabe que ya había subido ese tramo y puede marcarlo sin
+    volver a intentarlo, en vez de reenviarlo en cada vuelta.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    insertados = 0
+    try:
+        for e in lote.eventos:
+            cur.execute(
+                """
+                INSERT INTO public.node_eventos
+                       (ts, gateway_id, sensor_id, evento, detalle)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (sensor_id, ts, evento) DO NOTHING
+                RETURNING id
+                """,
+                (e.ts, lote.gateway_id, e.sensor_id, e.evento,
+                 json.dumps(e.detalle) if e.detalle is not None else None),
+            )
+            if cur.fetchone() is not None:
+                insertados += 1
+        conn.commit()
+    except Exception as exc:                                   # noqa: BLE001
+        conn.rollback()
+        logger.error("Fallo la ingesta de eventos: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error guardando los eventos",
+        )
+    finally:
+        cur.close()
+        conn.close()
+
+    recibidos = len(lote.eventos)
+    logger.info("Eventos: %s recibidos, %s nuevos", recibidos, insertados)
+    return {
+        "recibidos": recibidos,
+        "insertados": insertados,
+        "duplicados": recibidos - insertados,
+    }
