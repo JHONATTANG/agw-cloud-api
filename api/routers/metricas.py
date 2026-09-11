@@ -102,6 +102,28 @@ def _una(sql: str, params: tuple = ()) -> dict:
     return f[0] if f else {}
 
 
+def _tabla(sensor_id: Optional[str]) -> str:
+    """
+    De que tabla leer segun si se pregunta por un nodo concreto.
+
+    Sin `sensor_id` la pregunta es "como va el enlace" y la respuesta
+    sale de `telemetria_real`, que deja fuera los nodos simulados: es
+    la regla de este modulo y no se toca.
+
+    Con `sensor_id` la pregunta cambia: "que reporta ESTE nodo". Eso
+    es una vista de cultivo, y la ficha de un nodo simulado tiene que
+    poder enseñar sus propias curvas —si no, sale vacia y parece un
+    fallo—. Se lee de la tabla completa, y el nombre pedido llega por
+    parametro, no interpolado, asi que no hay mas SQL que el que hay.
+    """
+    return "telemetria_indoor" if sensor_id else "telemetria_real"
+
+
+def _eventos(sensor_id: Optional[str]) -> str:
+    """Misma regla que `_tabla`, para los eventos (migracion 007)."""
+    return "node_eventos" if sensor_id else "eventos_reales"
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Resumen — las tarjetas de cabecera del panel
 # ═══════════════════════════════════════════════════════════════
@@ -385,24 +407,35 @@ async def eventos(
     dias: int = Query(DIAS_DEF, ge=1, le=90),
     tipo: Optional[str] = None,
     limite: int = Query(200, ge=1, le=2000),
+    sensor_id: Optional[str] = None,
     _user: dict = Depends(get_current_user),
 ):
-    filtro = "AND evento = %s" if tipo else ""
-    p = (dias, tipo, limite) if tipo else (dias, limite)
+    # Los dos filtros se componen: se puede pedir "los riegos de este
+    # nodo". Los parametros se acumulan en el mismo orden en que los
+    # %s aparecen en la consulta.
+    condiciones, extra = [], ()
+    if tipo:
+        condiciones.append("AND evento = %s"); extra += (tipo,)
+    if sensor_id:
+        condiciones.append("AND sensor_id = %s"); extra += (sensor_id,)
+    filtro = " ".join(condiciones)
+    nodo = "AND sensor_id = %s" if sensor_id else ""
+    p_nodo = (dias, sensor_id) if sensor_id else (dias,)
 
     return {
-        "resumen": _filas("""
+        "sensor_id": sensor_id,
+        "resumen": _filas(f"""
             SELECT evento, COUNT(*) AS n, MAX(ts) AS ultimo
-            FROM node_eventos
-            WHERE ts > now() - (%s || ' days')::interval
+            FROM {_eventos(sensor_id)}
+            WHERE ts > now() - (%s || ' days')::interval {nodo}
             GROUP BY 1 ORDER BY n DESC
-        """, (dias,)),
+        """, p_nodo),
         "eventos": _filas(f"""
             SELECT ts, sensor_id, evento, detalle
-            FROM node_eventos
+            FROM {_eventos(sensor_id)}
             WHERE ts > now() - (%s || ' days')::interval {filtro}
             ORDER BY ts DESC LIMIT %s
-        """, p),
+        """, (dias,) + extra + (limite,)),
     }
 
 
@@ -423,7 +456,7 @@ async def riego(
                    ROUND(SUM((detalle->>'segundos')::numeric) / 60.0, 1) AS min_bomba,
                    MIN((detalle->>'segundos')::int)             AS s_min,
                    MAX((detalle->>'segundos')::int)             AS s_max
-            FROM node_eventos
+            FROM eventos_reales
             WHERE evento = 'riego_hidroponia_fin'
               AND ts > now() - (%s || ' days')::interval
               AND detalle ? 'segundos'
@@ -463,7 +496,7 @@ async def gateway(
             FROM telemetria_real GROUP BY 1
         """),
         "eventos_recientes": _filas("""
-            SELECT ts, evento, sensor_id FROM node_eventos
+            SELECT ts, evento, sensor_id FROM eventos_reales
             ORDER BY ts DESC LIMIT 10
         """),
     }
@@ -508,7 +541,7 @@ async def fog(
                COUNT(*) AS n,
                MIN(ts)  AS primero,
                MAX(ts)  AS ultimo
-        FROM node_eventos
+        FROM eventos_reales
         WHERE ts > now() - (%s || ' days')::interval
         GROUP BY 1 ORDER BY n DESC
     """, (dias,))
@@ -519,7 +552,7 @@ async def fog(
         SELECT COUNT(*) AS ciclos,
                ROUND(SUM((detalle->>'segundos')::numeric) / 60.0, 1) AS minutos_bomba,
                COUNT(DISTINCT (ts AT TIME ZONE '{_ZONA}')::date) AS dias_con_riego
-        FROM node_eventos
+        FROM eventos_reales
         WHERE evento = 'riego_hidroponia_fin'
           AND ts > now() - (%s || ' days')::interval
           AND detalle ? 'segundos'
@@ -532,7 +565,7 @@ async def fog(
             SELECT ts, evento,
                    LEAD(ts)     OVER (ORDER BY ts) AS ts_sig,
                    LEAD(evento) OVER (ORDER BY ts) AS ev_sig
-            FROM node_eventos
+            FROM eventos_reales
             WHERE evento IN ('desconectado', 'conectado')
               AND ts > now() - (%s || ' days')::interval
         )
@@ -621,6 +654,7 @@ async def multiserie(
     metricas: str = Query("temperatura,humedad_ambiente,ec,rssi"),
     dias: int = Query(DIAS_DEF, ge=1, le=90),
     bucket_min: int = Query(30, ge=1, le=1440),
+    sensor_id: Optional[str] = None,
     _user: dict = Depends(get_current_user),
 ):
     pedidas = [m.strip() for m in metricas.split(",") if m.strip()]
@@ -639,6 +673,11 @@ async def multiserie(
     cols = ",\n               ".join(
         f"ROUND(AVG(t.{_METRICAS_SERIE[m]})::numeric, 2) AS {m}" for m in pedidas
     )
+    # En el ON y no en un WHERE: un WHERE sobre la tabla derecha de un
+    # LEFT JOIN tira las horas sin datos y la rejilla deja de ser
+    # completa. Con dos nodos, sin esto la ficha de uno pinta las
+    # curvas del otro.
+    filtro = "AND t.sensor_id = %s" if sensor_id else ""
 
     puntos = _filas(f"""
         WITH rejilla AS (
@@ -652,13 +691,15 @@ async def multiserie(
                COUNT(t.id) AS n,
                {cols}
         FROM rejilla r
-        LEFT JOIN telemetria_real t
+        LEFT JOIN {_tabla(sensor_id)} t
                ON t.t_rx >= r.t0
               AND t.t_rx <  r.t0 + (%s || ' minutes')::interval
+              {filtro}
         GROUP BY r.t0 ORDER BY r.t0
-    """, (dias, bucket_min, bucket_min))
+    """, (dias, bucket_min, bucket_min) + ((sensor_id,) if sensor_id else ()))
 
-    return {"metricas": pedidas, "bucket_min": bucket_min, "puntos": puntos}
+    return {"metricas": pedidas, "bucket_min": bucket_min,
+            "sensor_id": sensor_id, "puntos": puntos}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -671,6 +712,7 @@ async def multiserie(
 )
 async def diario(
     dias: int = Query(21, ge=1, le=90),
+    sensor_id: Optional[str] = None,
     _user: dict = Depends(get_current_user),
 ):
     """
@@ -682,7 +724,10 @@ async def diario(
     `periodo_ms` que el propio nodo reportó, que es el único que sabe a
     qué ritmo estaba publicando en ese momento.
     """
+    filtro = "AND sensor_id = %s" if sensor_id else ""
+    p = (dias, sensor_id) if sensor_id else (dias,)
     return {
+        "sensor_id": sensor_id,
         "dias": _filas(f"""
             WITH t AS (
                 SELECT date_trunc('day', t_rx AT TIME ZONE '{_ZONA}') AS dia,
@@ -693,9 +738,12 @@ async def diario(
                        ROUND(AVG(humedad_ambiente)::numeric, 2) AS hum_media,
                        ROUND(AVG(ec)::numeric, 1)               AS ec_media,
                        ROUND(AVG(periodo_ms)::numeric, 0)       AS periodo_ms,
-                       COUNT(*) FILTER (WHERE rssi < -70)       AS tramas_rssi_bajo
-                FROM telemetria_real
+                       COUNT(*) FILTER (WHERE rssi < -70)       AS tramas_rssi_bajo,
+                       -- t_rx en hora local sin zona, comparable con `dia`
+                       MIN(t_rx AT TIME ZONE '{_ZONA}')         AS primera
+                FROM {_tabla(sensor_id)}
                 WHERE t_rx > now() - (%s || ' days')::interval
+                  {filtro}
                 GROUP BY 1
             ),
             reinicios AS (
@@ -703,9 +751,10 @@ async def diario(
                 FROM (
                     SELECT t_rx, uptime_ms,
                            LAG(uptime_ms) OVER (ORDER BY t_rx) AS prev
-                    FROM telemetria_real
+                    FROM {_tabla(sensor_id)}
                     WHERE t_rx > now() - (%s || ' days')::interval
                       AND uptime_ms IS NOT NULL
+                      {filtro}
                 ) s
                 WHERE prev IS NOT NULL AND uptime_ms < prev
                 GROUP BY 1
@@ -714,9 +763,10 @@ async def diario(
                 SELECT date_trunc('day', ts AT TIME ZONE '{_ZONA}') AS dia,
                        COUNT(*) AS ciclos,
                        ROUND(SUM((detalle->>'segundos')::numeric) / 60, 1) AS min_bomba
-                FROM node_eventos
+                FROM {_eventos(sensor_id)}
                 WHERE evento LIKE 'riego_%%_fin'
                   AND ts > now() - (%s || ' days')::interval
+                  {filtro}
                 GROUP BY 1
             )
             SELECT t.dia,
@@ -726,18 +776,22 @@ async def diario(
                    COALESCE(g.ciclos, 0)     AS ciclos_riego,
                    COALESCE(g.min_bomba, 0)  AS min_bomba,
                    -- Tramas que cabían en el día al ritmo que el nodo dijo
-                   -- estar publicando. Se recorta al instante actual para
-                   -- no pintar el día en curso como una caída enorme.
+                   -- estar publicando. Se recorta por los dos extremos: al
+                   -- instante actual para no pintar el día en curso como
+                   -- una caída, y a la primera trama del nodo para no
+                   -- pintar el día de su alta como 340 tramas perdidas
+                   -- antes de que existiera.
                    GREATEST(ROUND(
-                       LEAST(86400, EXTRACT(EPOCH FROM (
-                           LEAST(now(), t.dia + interval '1 day') - t.dia)))
+                       EXTRACT(EPOCH FROM (
+                           LEAST(now() AT TIME ZONE '{_ZONA}', t.dia + interval '1 day')
+                           - GREATEST(t.dia, t.primera)))
                        / NULLIF(t.periodo_ms, 0) * 1000
                    ), 1) AS esperadas
             FROM t
             LEFT JOIN reinicios r ON r.dia = t.dia
             LEFT JOIN riego g     ON g.dia = t.dia
             ORDER BY t.dia
-        """, (dias, dias, dias)),
+        """, p + p + p),
     }
 
 
@@ -754,6 +808,7 @@ async def correlacion(
     y: str = Query("ec"),
     dias: int = Query(DIAS_DEF, ge=1, le=90),
     muestras: int = Query(1200, ge=50, le=5000),
+    sensor_id: Optional[str] = None,
     _user: dict = Depends(get_current_user),
 ):
     """
@@ -769,25 +824,27 @@ async def correlacion(
             raise HTTPException(status_code=400,
                                 detail=f"Metrica no reconocida: {nombre}")
     cx, cy = _METRICAS_SERIE[x], _METRICAS_SERIE[y]
+    filtro = "AND sensor_id = %s" if sensor_id else ""
+    p = (dias, sensor_id) if sensor_id else (dias,)
 
     puntos = _filas(f"""
         SELECT ROUND({cx}::numeric, 2) AS x,
                ROUND({cy}::numeric, 2) AS y,
                EXTRACT(HOUR FROM t_rx AT TIME ZONE '{_ZONA}')::int AS hora
-        FROM telemetria_real
+        FROM {_tabla(sensor_id)}
         WHERE {cx} IS NOT NULL AND {cy} IS NOT NULL
-          AND t_rx > now() - (%s || ' days')::interval
+          AND t_rx > now() - (%s || ' days')::interval {filtro}
         ORDER BY random() LIMIT %s
-    """, (dias, muestras))
+    """, p + (muestras,))
 
     coef = _una(f"""
         SELECT ROUND(CORR({cx}, {cy})::numeric, 3) AS r, COUNT(*) AS n
-        FROM telemetria_real
+        FROM {_tabla(sensor_id)}
         WHERE {cx} IS NOT NULL AND {cy} IS NOT NULL
-          AND t_rx > now() - (%s || ' days')::interval
-    """, (dias,))
+          AND t_rx > now() - (%s || ' days')::interval {filtro}
+    """, p)
 
-    return {"x": x, "y": y, "puntos": puntos, **coef}
+    return {"x": x, "y": y, "sensor_id": sensor_id, "puntos": puntos, **coef}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -825,7 +882,7 @@ async def perfil_horario(
     # dias de telemetria daba 0,36 ciclos/hora de dia donde son 4.
     dias_riego = _una("""
         SELECT COUNT(DISTINCT (ts AT TIME ZONE %s)::date) AS n
-        FROM node_eventos
+        FROM eventos_reales
         WHERE evento LIKE 'riego_%%_fin'
           AND ts > now() - (%s || ' days')::interval
     """, (_ZONA, dias)).get("n") or 1
@@ -849,7 +906,7 @@ async def perfil_horario(
         """, (dias,)),
         "riego_por_hora": _filas(f"""
             SELECT EXTRACT(HOUR FROM ts AT TIME ZONE '{_ZONA}')::int AS hora, COUNT(*) AS ciclos
-            FROM node_eventos
+            FROM eventos_reales
             WHERE evento LIKE 'riego_%%_fin'
               AND ts > now() - (%s || ' days')::interval
             GROUP BY 1 ORDER BY 1

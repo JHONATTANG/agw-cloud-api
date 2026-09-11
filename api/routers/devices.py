@@ -330,6 +330,7 @@ async def inventario(current_user: dict = Depends(get_current_user)):
                 ORDER BY sensor_id, t_rx DESC
             )
             SELECT n.id, n.sensor_id, n.node_type, n.alias, n.created_at,
+                   COALESCE(n.simulado, false) AS simulado,
                    g.gateway_id, g.alias AS gateway_alias,
                    u.t_rx, u.fw, u.rssi, u.temperatura,
                    u.humedad_ambiente, u.ec, u.agua, u.uptime_ms,
@@ -367,6 +368,31 @@ async def inventario(current_user: dict = Depends(get_current_user)):
 
     salida: List[dict] = []
 
+    # Lo que cada nodo tiene conectado. El firmware lo sabe —lo publica
+    # en `status.modos`— pero ese mensaje se queda en el gateway y no
+    # sube. Mientras no suba, se declara aquí por nodo: es la lista que
+    # decide qué controles y qué lecturas enseña la interfaz, y sin
+    # ella el nodo de lechuga ofrecía «llenar la tierra» sin tener
+    # válvula de tierra.
+    #
+    # Se indexa por sensor_id y no por node_type: los dos son
+    # HIDROPONIA y sin embargo no llevan lo mismo.
+    CAPACIDADES = {
+        "IoT-node-26.001": {
+            "especie": "hierbabuena",
+            "sensores":   ["hdc1080", "tds", "nivel"],
+            "actuadores": ["bomba", "valvula_hidro", "valvula_tierra", "luz"],
+            "modulos":    ["riego_hidro", "riego_tierra", "ambiente"],
+        },
+        "IoT-node-26.002": {
+            "especie": "lechuga",
+            "sensores":   ["hdc1080"],
+            "actuadores": ["bomba", "valvula_hidro"],
+            "modulos":    ["riego_hidro"],
+        },
+    }
+    SIN_CAPACIDADES = {"especie": None, "sensores": [], "actuadores": [], "modulos": []}
+
     # Silencio mínimo entre los nodos de cada gateway: el gateway está tan
     # vivo como su nodo más despierto.
     silencio_por_gw: dict = {}
@@ -386,8 +412,9 @@ async def inventario(current_user: dict = Depends(get_current_user)):
             "status": _estado(sil),
             "last_seen": None,
             "alias": g["alias"],
-            "location": "Cultivo indoor · hierbabuena",
+            "location": "Cultivo indoor",
             "description": "Nodo fog: broker MQTT, motor de reglas y buffer local",
+            "nodos": sum(1 for n in nodos if n["gateway_id"] == g["gateway_id"]),
             "gateway_id": g["gateway_id"],
             "created_at": g["created_at"].isoformat() if g["created_at"] else None,
             "silencio_s": sil,
@@ -395,6 +422,7 @@ async def inventario(current_user: dict = Depends(get_current_user)):
 
     for n in nodos:
         sil = float(n["silencio_s"]) if n["silencio_s"] is not None else None
+        cap = CAPACIDADES.get(n["sensor_id"], SIN_CAPACIDADES)
         salida.append({
             "id": str(n["id"]),
             "device_uid": n["sensor_id"],
@@ -403,8 +431,13 @@ async def inventario(current_user: dict = Depends(get_current_user)):
             "status": _estado(sil),
             "last_seen": n["t_rx"].isoformat() if n["t_rx"] else None,
             "alias": n["alias"],
-            "location": "Cultivo indoor · hierbabuena",
-            "description": "Nodo ESP32: sensores, relés y ciclos de riego",
+            "simulado": bool(n["simulado"]),
+            "especie": cap["especie"],
+            "location": f"Cultivo indoor · {cap['especie']}" if cap["especie"] else "Cultivo indoor",
+            "description": ("Nodo ESP32 con sensores simulados por firmware"
+                            if n["simulado"] else
+                            "Nodo ESP32: sensores, relés y ciclos de riego"),
+            "capacidades": {k: cap[k] for k in ("sensores", "actuadores", "modulos")},
             "firmware_version": n["fw"],
             "gateway_id": n["gateway_id"],
             "created_at": n["created_at"].isoformat() if n["created_at"] else None,
