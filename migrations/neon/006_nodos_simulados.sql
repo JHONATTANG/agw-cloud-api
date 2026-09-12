@@ -60,6 +60,7 @@ FROM public.gateways g
 WHERE g.gateway_id = 'FOG_RPI_HIERBABUENA_01'
 ON CONFLICT (gateway_id, sensor_id) DO NOTHING;
 
-INSERT INTO public.schema_migrations (filename, checksum, applied_at)
-VALUES ('006_nodos_simulados.sql', 'manual', now())
-ON CONFLICT DO NOTHING;
+-- (Antes esta migración se inscribía sola en schema_migrations con
+-- checksum 'manual'. Con migrate.py eso duplicaba la clave y la
+-- migración no podía aplicarse en una base nueva. El runner la
+-- registra; aquí no hace falta.)
