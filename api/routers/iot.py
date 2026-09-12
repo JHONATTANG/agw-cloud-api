@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from api.security import get_current_user, get_db_connection, require_iot_token
+from api.webhook_gateway import avisar_gateway
 
 logger = logging.getLogger("agw-cloud-api.iot")
 
@@ -38,6 +39,13 @@ class ComandoPayload(BaseModel):
     # traducción intermedia sería un sitio más donde desincronizarse.
     comando: dict = Field(..., description='p.ej. {"cmd":"luz","encendida":false}')
     nota: Optional[str] = Field(None, max_length=255)
+
+
+class WebhookGateway(BaseModel):
+    """Lo que el gateway anuncia al arrancar: dónde recibe avisos."""
+    gateway_id: str = Field(..., min_length=3, max_length=100)
+    url: Optional[str] = Field(None, max_length=300,
+                               description="URL pública base, p.ej. https://rasp-jh.tailnet.ts.net. null = solo sondeo")
 
 
 def _filas(sql: str, params: tuple = ()) -> list[dict]:
@@ -112,7 +120,7 @@ async def listar_comandos(
     return {
         "comandos": _filas("""
             SELECT id, creado_en, sensor_id, comando, estado,
-                   entregado_en, resultado, nota
+                   entregado_en, resultado, nota, aviso
             FROM public.comandos
             ORDER BY creado_en DESC LIMIT %s
         """, (limite,)),
@@ -135,6 +143,46 @@ async def crear_comando(
     """, (payload.sensor_id, json.dumps(payload.comando),
           payload.nota, user.get("email")))
     logger.info("Comando encolado: %s -> %s", payload.sensor_id, payload.comando)
+
+    # Avisar al gateway del nodo para que no espere al sondeo. La orden
+    # ya está en la tabla: si el aviso falla, la recoge el sondeo de
+    # respaldo y el panel ve 'fallido' en vez de un silencio.
+    gw = _filas("""
+        SELECT g.gateway_id, g.webhook_url
+        FROM public.edge_nodes n JOIN public.gateways g ON g.id = n.gateway_id
+        WHERE n.sensor_id = %s LIMIT 1
+    """, (payload.sensor_id,))
+    aviso = (avisar_gateway(gw[0]["webhook_url"], gw[0]["gateway_id"], [payload.sensor_id])
+             if gw else "sin_webhook")
+    _ejecutar("UPDATE public.comandos SET aviso = %s WHERE id = %s RETURNING id",
+              (aviso, fila["id"]))
+    fila["aviso"] = aviso
+    return fila
+
+
+@iot_router.post(
+    "/gateway/webhook",
+    summary="El gateway anuncia dónde recibe avisos",
+)
+async def anunciar_webhook(
+    payload: WebhookGateway,
+    _token: str = Depends(require_iot_token),
+):
+    """
+    El gateway lo llama al arrancar y cada pocas horas. Con `url: null`
+    se vuelve a solo sondeo (p.ej. si Funnel está caído).
+    """
+    # `_ejecutar` convierte un UPDATE sin filas en un 500; se comprueba
+    # antes para responder 404, que es lo que es.
+    if not _filas("SELECT 1 FROM public.gateways WHERE gateway_id = %s", (payload.gateway_id,)):
+        raise HTTPException(status_code=404, detail="Gateway no registrado")
+    fila = _ejecutar("""
+        UPDATE public.gateways
+           SET webhook_url = %s, webhook_anunciado_en = now()
+         WHERE gateway_id = %s
+        RETURNING gateway_id, webhook_url, webhook_anunciado_en
+    """, (payload.url, payload.gateway_id))
+    logger.info("Webhook del gateway %s: %s", payload.gateway_id, payload.url or "ninguno")
     return fila
 
 
