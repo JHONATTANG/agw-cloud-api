@@ -160,6 +160,40 @@ async def crear_comando(
     return fila
 
 
+class Presencia(BaseModel):
+    """Latido del panel: alguien con sesión está mirando sus nodos."""
+    segundos: int = Field(180, ge=30, le=900,
+                          description="Cuánto mantener el gateway despierto desde este latido")
+
+
+@iot_router.post(
+    "/presencia",
+    summary="Latido del panel: hay un usuario mirando sus nodos",
+)
+async def presencia(
+    payload: Presencia,
+    user: dict = Depends(get_current_user),
+):
+    """
+    El panel lo manda cada minuto mientras la pestaña esté visible y el
+    usuario haya interactuado hace poco. Se reenvía a los gateways de
+    ESTE usuario —no a todos— como un aviso firmado con vencimiento: el
+    gateway pasa a subir cada 2 min y, cuando dejan de llegar latidos,
+    el vencimiento pasa y vuelve solo a cada 30 min.
+
+    Es lo único que decide el ritmo de subida. Sin latidos, dormido.
+    """
+    gws = _filas("""
+        SELECT gateway_id, webhook_url FROM public.gateways
+        WHERE user_id = %s AND webhook_url IS NOT NULL
+    """, (user["id"],))
+    resultado = {g["gateway_id"]: avisar_gateway(
+        g["webhook_url"], g["gateway_id"], [], motivo="presencia",
+        ruta="/webhook/presencia", extra={"segundos": payload.segundos})
+        for g in gws}
+    return {"gateways": resultado, "segundos": payload.segundos}
+
+
 @iot_router.post(
     "/gateway/webhook",
     summary="El gateway anuncia dónde recibe avisos",

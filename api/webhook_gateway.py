@@ -135,7 +135,8 @@ def _post(url: str, cuerpo: bytes, cabeceras: dict) -> int:
 
 
 def avisar_gateway(url: str | None, gateway_id: str, sensor_ids: list[str],
-                   motivo: str = "ordenes") -> str:
+                   motivo: str = "ordenes", ruta: str = "/webhook/ordenes",
+                   extra: dict | None = None) -> str:
     """
     Devuelve 'entregado', 'fallido' o 'sin_webhook'. Nunca lanza: un
     gateway apagado no puede impedir que la orden se encole.
@@ -149,7 +150,7 @@ def avisar_gateway(url: str | None, gateway_id: str, sensor_ids: list[str],
 
     ts = str(int(time.time()))
     cuerpo = json.dumps({"gateway_id": gateway_id, "motivo": motivo,
-                         "sensor_ids": sensor_ids, "ts": int(ts)}).encode()
+                         "sensor_ids": sensor_ids, "ts": int(ts), **(extra or {})}).encode()
     cabeceras = {
         "Content-Type": "application/json",
         "Content-Length": str(len(cuerpo)),
@@ -159,7 +160,7 @@ def avisar_gateway(url: str | None, gateway_id: str, sensor_ids: list[str],
     }
     t0 = time.monotonic()
     try:
-        codigo = _post(url.rstrip("/") + "/webhook/ordenes", cuerpo, cabeceras)
+        codigo = _post(url.rstrip("/") + ruta, cuerpo, cabeceras)
         ok = 200 <= codigo < 300
         logger.info("Aviso al gateway %s: %s en %.0f ms", gateway_id,
                     "ok" if ok else f"HTTP {codigo}", (time.monotonic() - t0) * 1000)
